@@ -19,7 +19,7 @@ from streamlit.components.v1 import html
 # """
 
 # Wrapt the javascript as html code
-iframe_script = f"<h2>Hi there, heres the script</h2><script src='https://www.pitcherlist.com/wp-content/themes/butterScotch/_static/iframe-resizer/iframeResizer.contentWindow.min.js'></script>"
+iframe_script = f"<script src='https://www.pitcherlist.com/wp-content/themes/butterScotch/_static/iframe-resizer/iframeResizer.contentWindow.min.js'></script>"
 
 html(iframe_script)
 ## Set Styling
