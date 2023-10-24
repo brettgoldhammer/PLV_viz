@@ -10,7 +10,18 @@ import urllib
 from PIL import Image
 from collections import Counter
 from scipy import stats
+from streamlit.components.v1 import html
 
+#Iframe Resizer
+# ## Define your javascript
+# my_js = """
+# alert("Hola mundo");
+# """
+
+# Wrapt the javascript as html code
+iframe_script = f"<h2>Hi there, heres the script</h2><script src='https://www.pitcherlist.com/wp-content/themes/butterScotch/_static/iframe-resizer/iframeResizer.contentWindow.min.js'></script>"
+
+html(iframe_script)
 ## Set Styling
 # Plot Style
 pl_white = '#FEFEFE'
