@@ -46,6 +46,7 @@ st.write('''
 - ***Strikezone Judgment***: The "correctness" of a hitter's swings and takes, using the likelihood of a pitch being a called strike (for swings) or a ball/HBP (for takes).
 ''')
 st.write("- ***Decision Value***: Modeled value (runs per 100 pitches) of a hitter's decision to swing or take, minus the modeled value of the alternative.")
+st.write("- ***Pitch Hittability***: Likelihood of the pitches a hitter faces becoming batted balls.")
 st.write("- ***Contact Ability***: A hitter's ability to make contact (foul strike or BIP), above the contact expectation of each pitch.")
 st.write("- ***Power***: Modeled number of extra bases (xISO on contact) above a pitch's expectation, for each BBE.")
 st.write("- ***Hitter Performance (HP)***: Runs added per 100 pitches seen by the hitter (including swing/take decisions), after accounting for pitch quality.")
@@ -69,7 +70,7 @@ season_names = {
 }
 
 # Load Data
-@st.cache_data(ttl=12*3600)
+@st.cache_data(ttl=2*3600,show_spinner=f"Loading {year} data")
 def load_season_data(year):
     df = pd.DataFrame()
     for month in range(3,11):
@@ -77,11 +78,46 @@ def load_season_data(year):
         df = pd.concat([df,
                         pd.read_parquet(file_name)[['hittername','p_hand','b_hand','pitch_id','balls','strikes','swing_agg',
                                                     'strike_zone_judgement','decision_value','contact_over_expected',
-                                                    'adj_power','batter_wOBA']]
+                                                    'adj_power','batter_wOBA','pitchtype','pitch_type_bucket',
+                                                    'in_play_input','p_x','p_z','sz_z','strike_zone_top','strike_zone_bottom'
+                                                   ]]
                        ])
     
     df = df.reset_index(drop=True)
-    for stat in ['swing_agg','strike_zone_judgement','contact_over_expected']:
+
+    df.loc[df['p_x'].notna(),'kde_x'] = np.clip(df.loc[df['p_x'].notna(),'p_x'].astype('float').mul(12).round(0).astype('int').div(12),
+                                                -20/12,
+                                                20/12)
+    df.loc[df['sz_z'].notna(),'kde_z'] = np.clip(df.loc[df['sz_z'].notna(),'sz_z'].astype('float').mul(24).round(0).astype('int').div(24),
+                                                 -1.5,
+                                                 1.25)
+    
+    df['base_decision_value'] = df['decision_value'].groupby([df['p_hand'],
+                                                              df['b_hand'],
+                                                              df['pitchtype'],
+                                                              df['kde_x'],
+                                                              df['kde_z'],
+                                                              df['balls'],
+                                                              df['strikes']]).transform('mean')
+    df['base_power'] = df['adj_power'].groupby([df['p_hand'],
+                                                df['b_hand'],
+                                                df['pitchtype'],
+                                                df['kde_x'],
+                                                df['kde_z'],
+                                                df['balls'],
+                                                df['strikes']]).transform('mean')
+
+    df['sa_oa'] = df['swing_agg'].copy()
+    df['dv_oa'] = df['decision_value'].sub(df['base_decision_value'])
+    df['ca_oa'] = df['contact_over_expected'].copy()
+    df['pow_oa'] = df['adj_power'].sub(df['base_power'])
+
+    
+    df.loc[df['sz_z'].notna(),'kde_z'] = np.clip(df.loc[df['sz_z'].notna(),'p_z'].astype('float').mul(12).round(0).astype('int').div(12),
+                                                 0,
+                                                 4.5)
+
+    for stat in ['swing_agg','strike_zone_judgement','contact_over_expected','in_play_input']:
         df[stat] = df[stat].mul(100).astype('float')
     
     # Convert to runs added
@@ -144,6 +180,7 @@ stat_names = {
     'swing_agg':'Swing Aggression',
     'strike_zone_judgement':'Strikezone Judgement',
     'decision_value':'Decision Value',
+    'in_play_input':'Pitch Hittability',
     'contact_over_expected':'Contact Ability',
     'adj_power':'Power',
     'batter_wOBA':'Hitter Performance'
@@ -153,6 +190,7 @@ stat_values = {
     'swing_agg':'Swing Frequency, Above Expected',
     'strike_zone_judgement':'Ball/Strike Correctness',
     'decision_value':'Runs Added, per 100 Pitches',
+    'in_play_input':'Batted Ball Likelihood of Pitches',
     'contact_over_expected':'Contact Frequency, Above Expected',
     'adj_power':'Expected Extra Bases Added, per BBE',
     'batter_wOBA':'Runs Added, per 100 Pitches'
@@ -168,15 +206,36 @@ players = list(plv_df.groupby('hittername', as_index=False)[['pitch_id','Hitter 
 default_player = players.index('Juan Soto')
 player = st.selectbox('Choose a hitter:', players, index=default_player)
 
-# Metric
-metrics = list(stat_names.values())
-default_stat = metrics.index('Decision Value')
-metric = st.selectbox('Choose a metric:', metrics, index=default_stat)
+col1, col2 = st.columns([0.5,0.5])
+
+with col1:
+    # Metric Selection
+    metrics = list(stat_names.values())
+    default_stat = metrics.index('Decision Value')
+    metric = st.selectbox('Choose a metric:', metrics, index=default_stat)
+
+with col2:
+    # Pitchtype Selection
+    pitchtype_help = '''
+    **Fastballs**: 4-Seam, Sinkers, some Cutters\n
+    **Breaking Balls**: Sliders, Curveballs, most Cutters\n
+    **Offspeed**: Changeups, Splitters
+    '''
+    pitchtype_base = st.selectbox('Vs Pitchtype', 
+                                  ['All','Fastballs', 'Breaking Balls', 'Offspeed'],
+                                  index=0,
+                                  help=pitchtype_help
+                                    )
+    if pitchtype_base == 'All':
+        pitchtype_select = ['Fastball', 'Breaking Ball', 'Offspeed', 'Other']
+    else:
+        pitchtype_select = [pitchtype_base] if pitchtype_base=='Offspeed' else [pitchtype_base[:-1]] # remove the 's'
 
 rolling_denom = {
     'Swing Aggression':'Pitches',
     'Strikezone Judgement':'Pitches',
     'Decision Value':'Pitches',
+    'Pitch Hittability':'Pitches',
     'Contact Ability':'Swings',
     'Power': 'BBE',
     'Hitter Performance':'Pitches'
@@ -186,6 +245,7 @@ rolling_threshold = {
     'Swing Aggression':400,
     'Strikezone Judgement':400,
     'Decision Value':400,
+    'Pitch Hittability':400,
     'Contact Ability':200,
     'Power': 75,
     'Hitter Performance':800
@@ -235,6 +295,7 @@ hand_map = {
 
 chart_thresh_list = (plv_df
                      .loc[plv_df['count'].astype('str').isin(selected_options) &
+                          plv_df['pitch_type_bucket'].isin(pitchtype_select) &
                           plv_df['b_hand'].isin(hitter_hand) &
                           plv_df['p_hand'].isin(hand_map[handedness])
                          ]
@@ -248,7 +309,7 @@ chart_thresh_list = (plv_df
                      .copy()
                     )
 
-chart_mean = plv_df.loc[plv_df['count'].isin(selected_options),metric].mean()
+chart_mean = plv_df.loc[plv_df['count'].isin(selected_options) & plv_df['pitch_type_bucket'].isin(pitchtype_select),metric].mean()
 chart_90 = chart_thresh_list[metric].quantile(0.9)
 chart_75 = chart_thresh_list[metric].quantile(0.75)
 chart_25 = chart_thresh_list[metric].quantile(0.25)
@@ -259,7 +320,8 @@ rolling_df = (plv_df
               .sort_values('pitch_id')
               .loc[(plv_df['hittername']==player) &
                    plv_df['p_hand'].isin(hand_map[handedness]) &
-                   plv_df['count'].isin(selected_options),
+                   plv_df['count'].isin(selected_options) &
+                   plv_df['pitch_type_bucket'].isin(pitchtype_select),
                    ['hittername',metric]]
               .dropna()
               .reset_index(drop=True)
@@ -367,15 +429,22 @@ def rolling_chart():
           )
     
     if metric in ['Swing Aggression','Contact Ability','Strikezone Judgement']:
-        #ax.yaxis.set_major_formatter(ticker.PercentFormatter())
+        ax.set_yticks(ax.get_yticks())
         ax.set_yticklabels([f'{int(x)}%' for x in ax.get_yticks()])
+
+    if metric =='Pitch Hittability':
+        ax.set_yticks(ax.get_yticks())
+        ax.set_yticklabels([f'{x:.1f}%' for x in ax.get_yticks()])
+
+    pitch_text = f'; vs {pitchtype_select[0]}' if pitchtype_base == 'Offspeed' else f'; vs {pitchtype_select[0]}s'
     
     fig.suptitle("{}'s {} {}\n{}".format(player,
                                                  year,
                                                  metric,
-                                                 '(Rolling {} {}{}{})'.format(window,
+                                                 '(Rolling {} {}{}{}{})'.format(window,
                                                                       rolling_denom[metric],
-                                                                      '' if (count_select in ['All','Custom']) else f'; in {count_select} Counts',
+                                                                      '' if pitchtype_base == 'All' else pitch_text,
+                                                                      '' if count_select=='All' else f'; in {selected_options} counts' if count_select=='Custom' else f'; in {count_select} Counts',
                                                                       '' if (handedness=='All') else f'; {hitter_hand[0]}HH vs {hand_map[handedness][0]}HP'
                                                                      )
                                                 ),
@@ -395,3 +464,4 @@ else:
     rolling_chart()
 
 st.write("If you have questions or ideas on what you'd like to see, DM me! [@Blandalytics](https://twitter.com/blandalytics)")
+st.write("Heatmaps can now be found at [plv-hitter-heatmaps.streamlit.app](https://plv-hitter-heatmaps.streamlit.app/)")
